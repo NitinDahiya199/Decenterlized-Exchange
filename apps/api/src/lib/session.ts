@@ -9,6 +9,7 @@ export type SessionPayload = {
   walletId: string;
   address: string;
   chainId: number;
+  verified: boolean;
   exp: number;
 };
 

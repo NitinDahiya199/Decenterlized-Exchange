@@ -106,6 +106,7 @@ export function OrderEntry({ slug = "ETH-USDC" }: { slug?: string }) {
     try {
       const response = await fetch(new URL("/orders", apiUrl), {
         method: "POST",
+        credentials: "include",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });

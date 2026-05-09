@@ -53,10 +53,14 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dex_terminal
 
+      - name: Tests
+        run: |
+          pnpm --filter @dex-terminal/api test
+          pnpm --filter @dex-terminal/indexer test
+          pnpm --filter @dex-terminal/web test
+          pnpm --filter @dex-terminal/contracts test
+
       - name: Build
         run: pnpm build
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dex_terminal
-
-      - name: Contract tests
-        run: pnpm --filter @dex-terminal/contracts test

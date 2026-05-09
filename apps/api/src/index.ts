@@ -2,23 +2,29 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { Prisma } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { Server } from "socket.io";
+import { createAdapter } from "@socket.io/redis-adapter";
+import { Redis } from "ioredis";
+import { verifyMessage } from "viem";
 import {
   ApiErrorCodes,
   apiError,
   balancesResponseSchema,
   candlesQuerySchema,
   createOrderBodySchema,
-  linkWalletBodySchema,
   marketOrderbookEventName,
   marketSlugParamsSchema,
   marketTickerEventName,
   orderIdParamsSchema,
+  ordersQuerySchema,
   parseServerEnv,
   recentTradesQuerySchema,
   TYPES_PACKAGE,
+  verifyWalletBodySchema,
   walletAddressParamsSchema,
   walletBalancesQuerySchema,
+  walletNonceQuerySchema,
   type MarketOrderbookDelta,
   type MarketTicker,
   type OrderbookLevel,
@@ -33,14 +39,31 @@ import {
   sessionCookieHeader,
   verifySessionToken,
 } from "./lib/session.js";
+import {
+  buildRateLimitError,
+  requireMatchingWallet,
+  requireOrderOwner,
+  requireVerifiedSession,
+} from "./lib/write-route-policy.js";
 
 const env = parseServerEnv(process.env);
 const host = env.API_HOST;
 const port = env.API_PORT;
 const defaultMarketSlug = "ETH-USDC";
+const WALLET_NONCE_TTL_MS = 5 * 60 * 1000;
 
 const fastify = Fastify({ logger: true });
 const marketTimerRef: { current?: ReturnType<typeof setInterval> } = {};
+const redisClient = env.REDIS_URL !== undefined ? new Redis(env.REDIS_URL, { lazyConnect: true }) : null;
+const redisSubscriber = redisClient?.duplicate() ?? null;
+const walletChallenges = new Map<
+  string,
+  {
+    message: string;
+    nonce: string;
+    expiresAt: number;
+  }
+>();
 
 const pairInclude = {
   baseToken: true,
@@ -51,13 +74,24 @@ await fastify.register(cors, {
   origin: env.API_ORIGIN ?? "http://localhost:3000",
   credentials: true,
 });
+if (redisClient !== null) {
+  try {
+    await redisClient.connect();
+    await redisSubscriber?.connect();
+    fastify.log.info("redis connected for rate limiting and socket scaling");
+  } catch (error) {
+    if (env.NODE_ENV === "production") {
+      throw error;
+    }
+    fastify.log.warn({ error }, "redis unavailable; falling back to in-memory development mode");
+  }
+}
+
 await fastify.register(rateLimit, {
   global: false,
+  ...(redisClient?.status === "ready" ? { redis: redisClient, nameSpace: "dex-terminal:rate-limit:" } : {}),
   errorResponseBuilder: (_request, context) =>
-    apiError(ApiErrorCodes.RATE_LIMITED, "Too many write requests", {
-      max: context.max,
-      after: context.after,
-    }),
+    buildRateLimitError(context.max, context.after),
 });
 
 type PairWithTokens = Prisma.PairGetPayload<{ include: typeof pairInclude }>;
@@ -122,6 +156,22 @@ function sendForbidden(reply: FastifyReply, message = "Wallet session does not o
 function getSession(request: FastifyRequest) {
   const token = getSessionTokenFromCookie(request.headers.cookie);
   return token === null ? null : verifySessionToken(token, env.SESSION_SECRET);
+}
+
+function walletChallengeKey(address: string, chainId: number) {
+  return `${chainId}:${address.toLowerCase()}`;
+}
+
+function createWalletMessage({ address, chainId, nonce }: { address: string; chainId: number; nonce: string }) {
+  return [
+    "DEX Terminal wallet verification",
+    "",
+    `Address: ${address.toLowerCase()}`,
+    `Chain ID: ${chainId}`,
+    `Nonce: ${nonce}`,
+    "",
+    "Sign this message to link your wallet. This does not authorize a transaction.",
+  ].join("\n");
 }
 
 async function findPairBySlug(slug: string) {
@@ -236,6 +286,41 @@ async function getBalances(where: Prisma.BalanceWhereInput) {
   });
 }
 
+async function getOrCreateLinkedWallet(address: string, chainId: number) {
+  return prisma.$transaction(async (tx) => {
+    const existingWallet = await tx.wallet.findUnique({
+      where: {
+        address_chainId: {
+          address,
+          chainId,
+        },
+      },
+      include: { user: true },
+    });
+
+    if (existingWallet !== null) {
+      return existingWallet;
+    }
+
+    const user = await tx.user.create({
+      data: {
+        displayName: `${address.slice(0, 6)}...${address.slice(-4)}`,
+      },
+    });
+
+    return tx.wallet.create({
+      data: {
+        userId: user.id,
+        address,
+        chainId,
+        isPrimary: true,
+        label: "Verified wallet",
+      },
+      include: { user: true },
+    });
+  });
+}
+
 function toOrderbookLevels(
   orders: Array<{
     price: Prisma.Decimal | null;
@@ -337,10 +422,21 @@ async function getTicker(slug: string, orderbook: OrderbookResponse): Promise<Ma
   };
 }
 
-await fastify.get("/health", async () => ({
-  ok: true,
-  types: TYPES_PACKAGE,
-}));
+await fastify.get("/health", async () => {
+  await prisma.$queryRaw`SELECT 1`;
+
+  return {
+    ok: true,
+    types: TYPES_PACKAGE,
+    database: "ok",
+    redis:
+      redisClient === null
+        ? "disabled"
+        : redisClient.status === "ready"
+          ? "ok"
+          : "degraded",
+  };
+});
 
 await fastify.get("/pairs", async () => {
   const pairs = await prisma.pair.findMany({
@@ -472,6 +568,135 @@ await fastify.get("/wallets/:address/balances", async (request, reply) => {
   });
 });
 
+await fastify.get("/orders", async (request, reply) => {
+  const session = getSession(request);
+  if (session === null) {
+    return sendUnauthorized(reply);
+  }
+
+  const queryResult = ordersQuerySchema.safeParse(request.query);
+  if (!queryResult.success) {
+    return sendValidationError(reply, "Invalid orders query", queryResult.error);
+  }
+
+  const statusFilter: Prisma.EnumOrderStatusFilter<"Order"> | undefined =
+    queryResult.data.status === "open"
+      ? { in: ["OPEN", "PARTIALLY_FILLED"] }
+      : queryResult.data.status === "history"
+        ? { in: ["FILLED", "CANCELLED", "REJECTED"] }
+        : undefined;
+  const where: Prisma.OrderWhereInput = {
+    userId: session.userId,
+    ...(statusFilter !== undefined ? { status: statusFilter } : {}),
+  };
+  const orders = await prisma.order.findMany({
+    where,
+    include: { pair: true },
+    orderBy: { createdAt: "desc" },
+    take: queryResult.data.limit,
+  });
+
+  return {
+    orders: orders.map(serializeOrder),
+  };
+});
+
+await fastify.get("/wallets/nonce", async (request, reply) => {
+  const queryResult = walletNonceQuerySchema.safeParse(request.query);
+  if (!queryResult.success) {
+    return sendValidationError(reply, "Invalid wallet nonce query", queryResult.error);
+  }
+
+  const { address, chainId } = queryResult.data;
+  const nonce = randomUUID();
+  const expiresAt = Date.now() + WALLET_NONCE_TTL_MS;
+  const message = createWalletMessage({ address, chainId, nonce });
+  walletChallenges.set(walletChallengeKey(address, chainId), { message, nonce, expiresAt });
+
+  return {
+    address,
+    chainId,
+    nonce,
+    message,
+    expiresAt: new Date(expiresAt).toISOString(),
+  };
+});
+
+await fastify.post(
+  "/wallets/verify",
+  {
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: "1 minute",
+      },
+    },
+  },
+  async (request, reply) => {
+    const bodyResult = verifyWalletBodySchema.safeParse(request.body);
+    if (!bodyResult.success) {
+      return sendValidationError(reply, "Invalid wallet verification body", bodyResult.error);
+    }
+
+    const { address, chainId, message, nonce, signature } = bodyResult.data;
+    const challengeKey = walletChallengeKey(address, chainId);
+    const challenge = walletChallenges.get(challengeKey);
+    if (
+      challenge === undefined ||
+      challenge.nonce !== nonce ||
+      challenge.message !== message ||
+      challenge.expiresAt < Date.now()
+    ) {
+      walletChallenges.delete(challengeKey);
+      return reply.status(400).send(apiError(ApiErrorCodes.BAD_REQUEST, "Wallet verification challenge expired"));
+    }
+
+    const verified = await verifyMessage({
+      address: address as `0x${string}`,
+      message,
+      signature: signature as `0x${string}`,
+    });
+    if (!verified) {
+      return sendForbidden(reply, "Wallet signature does not match the requested address");
+    }
+
+    walletChallenges.delete(challengeKey);
+    const linkedWallet = await getOrCreateLinkedWallet(address, chainId);
+    const token = createSessionToken(
+      {
+        userId: linkedWallet.userId,
+        walletId: linkedWallet.id,
+        address: linkedWallet.address,
+        chainId: linkedWallet.chainId,
+        verified: true,
+      },
+      env.SESSION_SECRET,
+    );
+
+    reply.header(
+      "set-cookie",
+      sessionCookieHeader({
+        token,
+        secure: env.NODE_ENV === "production",
+      }),
+    );
+
+    return {
+      user: {
+        id: linkedWallet.user.id,
+        displayName: linkedWallet.user.displayName,
+      },
+      wallet: {
+        id: linkedWallet.id,
+        address: linkedWallet.address,
+        chainId: linkedWallet.chainId,
+        isPrimary: linkedWallet.isPrimary,
+      },
+      verified: true,
+    };
+  },
+);
+
 await fastify.post(
   "/orders",
   {
@@ -489,14 +714,16 @@ await fastify.post(
   }
 
   const session = getSession(request);
+  const sessionPolicy = requireVerifiedSession(session);
+  if (!sessionPolicy.ok) {
+    return reply.status(sessionPolicy.status).send(sessionPolicy.body);
+  }
   if (session === null) {
     return sendUnauthorized(reply);
   }
-  if (
-    bodyResult.data.walletAddress !== undefined &&
-    bodyResult.data.walletAddress.toLowerCase() !== session.address.toLowerCase()
-  ) {
-    return sendForbidden(reply, "Order wallet does not match the active session");
+  const walletPolicy = requireMatchingWallet(session, bodyResult.data.walletAddress);
+  if (!walletPolicy.ok) {
+    return reply.status(walletPolicy.status).send(walletPolicy.body);
   }
 
   try {
@@ -532,75 +759,9 @@ await fastify.post(
     },
   },
   async (request, reply) => {
-  const bodyResult = linkWalletBodySchema.safeParse(request.body);
-  if (!bodyResult.success) {
-    return sendValidationError(reply, "Invalid wallet link body", bodyResult.error);
-  }
-
-  const { address, chainId } = bodyResult.data;
-  const linkedWallet = await prisma.$transaction(async (tx) => {
-    const existingWallet = await tx.wallet.findUnique({
-      where: {
-        address_chainId: {
-          address,
-          chainId,
-        },
-      },
-      include: { user: true },
-    });
-
-    if (existingWallet !== null) {
-      return existingWallet;
-    }
-
-    const user = await tx.user.create({
-      data: {
-        displayName: `${address.slice(0, 6)}...${address.slice(-4)}`,
-      },
-    });
-
-    return tx.wallet.create({
-      data: {
-        userId: user.id,
-        address,
-        chainId,
-        isPrimary: true,
-        label: "Connected wallet",
-      },
-      include: { user: true },
-    });
-  });
-
-  const token = createSessionToken(
-    {
-      userId: linkedWallet.userId,
-      walletId: linkedWallet.id,
-      address: linkedWallet.address,
-      chainId: linkedWallet.chainId,
-    },
-    env.SESSION_SECRET,
-  );
-
-  reply.header(
-    "set-cookie",
-    sessionCookieHeader({
-      token,
-      secure: env.NODE_ENV === "production",
-    }),
-  );
-
-  return {
-    user: {
-      id: linkedWallet.user.id,
-      displayName: linkedWallet.user.displayName,
-    },
-    wallet: {
-      id: linkedWallet.id,
-      address: linkedWallet.address,
-      chainId: linkedWallet.chainId,
-      isPrimary: linkedWallet.isPrimary,
-    },
-  };
+    return reply.status(400).send(
+      apiError(ApiErrorCodes.BAD_REQUEST, "Use GET /wallets/nonce and POST /wallets/verify to link wallets"),
+    );
   },
 );
 
@@ -621,6 +782,10 @@ await fastify.delete(
   }
 
   const session = getSession(request);
+  const sessionPolicy = requireVerifiedSession(session);
+  if (!sessionPolicy.ok) {
+    return reply.status(sessionPolicy.status).send(sessionPolicy.body);
+  }
   if (session === null) {
     return sendUnauthorized(reply);
   }
@@ -634,8 +799,9 @@ await fastify.delete(
   if (order === null) {
     return sendOrderNotFound(reply, id);
   }
-  if (order.userId !== session.userId) {
-    return sendForbidden(reply);
+  const ownerPolicy = requireOrderOwner(session, order.userId);
+  if (!ownerPolicy.ok) {
+    return reply.status(ownerPolicy.status).send(ownerPolicy.body);
   }
 
   if (order.status !== "OPEN" && order.status !== "PARTIALLY_FILLED") {
@@ -670,6 +836,8 @@ fastify.addHook("onClose", async () => {
   if (marketTimerRef.current !== undefined) {
     clearInterval(marketTimerRef.current);
   }
+  redisSubscriber?.disconnect();
+  redisClient?.disconnect();
 });
 
 await fastify.ready();
@@ -677,6 +845,9 @@ await fastify.ready();
 const io = new Server(fastify.server, {
   cors: { origin: env.API_ORIGIN ?? "http://localhost:3000" },
 });
+if (redisClient?.status === "ready" && redisSubscriber?.status === "ready") {
+  io.adapter(createAdapter(redisClient, redisSubscriber));
+}
 
 async function emitMarketSnapshot(slug: string): Promise<void> {
   const orderbook = await getOrderbook(slug);

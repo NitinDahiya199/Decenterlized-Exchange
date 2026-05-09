@@ -83,16 +83,45 @@ export const orderIdParamsSchema = z.object({
 
 export type OrderIdParams = z.infer<typeof orderIdParamsSchema>;
 
+const walletAddressSchema = z
+  .string()
+  .trim()
+  .regex(/^0x[a-fA-F0-9]{40}$/)
+  .transform((address) => address.toLowerCase());
+
 export const linkWalletBodySchema = z.object({
-  address: z
-    .string()
-    .trim()
-    .regex(/^0x[a-fA-F0-9]{40}$/)
-    .transform((address) => address.toLowerCase()),
+  address: walletAddressSchema,
   chainId: z.coerce.number().int().positive(),
 });
 
 export type LinkWalletBody = z.infer<typeof linkWalletBodySchema>;
+
+export const walletNonceQuerySchema = z.object({
+  address: walletAddressSchema,
+  chainId: z.coerce.number().int().positive(),
+});
+
+export type WalletNonceQuery = z.infer<typeof walletNonceQuerySchema>;
+
+export const walletNonceResponseSchema = z.object({
+  address: z.string(),
+  chainId: z.number().int(),
+  nonce: z.string(),
+  message: z.string(),
+  expiresAt: z.string(),
+});
+
+export type WalletNonceResponse = z.infer<typeof walletNonceResponseSchema>;
+
+export const verifyWalletBodySchema = z.object({
+  address: walletAddressSchema,
+  chainId: z.coerce.number().int().positive(),
+  nonce: z.string().min(16),
+  message: z.string().min(1),
+  signature: z.string().regex(/^0x[a-fA-F0-9]+$/),
+});
+
+export type VerifyWalletBody = z.infer<typeof verifyWalletBodySchema>;
 
 export const linkedWalletResponseSchema = z.object({
   user: z.object({
@@ -105,16 +134,13 @@ export const linkedWalletResponseSchema = z.object({
     chainId: z.number().int(),
     isPrimary: z.boolean(),
   }),
+  verified: z.boolean().optional(),
 });
 
 export type LinkedWalletResponse = z.infer<typeof linkedWalletResponseSchema>;
 
 export const walletAddressParamsSchema = z.object({
-  address: z
-    .string()
-    .trim()
-    .regex(/^0x[a-fA-F0-9]{40}$/)
-    .transform((address) => address.toLowerCase()),
+  address: walletAddressSchema,
 });
 
 export type WalletAddressParams = z.infer<typeof walletAddressParamsSchema>;
@@ -250,6 +276,19 @@ export const orderMutationResponseSchema = z.object({
 });
 
 export type OrderMutationResponse = z.infer<typeof orderMutationResponseSchema>;
+
+export const ordersQuerySchema = z.object({
+  status: z.enum(["open", "history", "all"]).default("open"),
+  limit: z.coerce.number().int().positive().max(100).default(50),
+});
+
+export type OrdersQuery = z.infer<typeof ordersQuerySchema>;
+
+export const ordersResponseSchema = z.object({
+  orders: z.array(orderSchema),
+});
+
+export type OrdersResponse = z.infer<typeof ordersResponseSchema>;
 
 export const candleSchema = z.object({
   interval: candleIntervalSchema,

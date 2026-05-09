@@ -6,6 +6,7 @@ import { MarketCandlestickChart } from "@/components/terminal/market-candlestick
 import { MarketOrderbook } from "@/components/terminal/market-orderbook";
 import { OrderEntry } from "@/components/terminal/order-entry";
 import { RecentTrades } from "@/components/terminal/recent-trades";
+import { UserOrders } from "@/components/terminal/user-orders";
 
 function ResizeHandle() {
   return <Separator className="hidden w-2 rounded-full bg-white/5 transition hover:bg-cyan-400/30 lg:block" />;
@@ -23,9 +24,19 @@ export function TradeWorkspace() {
           </Panel>
           <Separator className="h-2 rounded-full bg-white/5 transition hover:bg-cyan-400/30" />
           <Panel defaultSize={30} minSize={18}>
-            <GlassPanel title="Recent trades" subtitle="Public tape · REST + WS" className="h-full">
-              <RecentTrades slug="ETH-USDC" />
-            </GlassPanel>
+            <Group orientation="horizontal" className="gap-2">
+              <Panel defaultSize={45} minSize={25}>
+                <GlassPanel title="Recent trades" subtitle="Public tape · REST + WS" className="h-full">
+                  <RecentTrades slug="ETH-USDC" />
+                </GlassPanel>
+              </Panel>
+              <Separator className="hidden w-2 rounded-full bg-white/5 transition hover:bg-cyan-400/30 lg:block" />
+              <Panel defaultSize={55} minSize={35}>
+                <GlassPanel title="Orders" subtitle="Open orders · history · cancel" className="h-full">
+                  <UserOrders />
+                </GlassPanel>
+              </Panel>
+            </Group>
           </Panel>
         </Group>
       </Panel>

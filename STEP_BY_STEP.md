@@ -89,20 +89,22 @@ Work in `apps/contracts` + `packages/blockchain`.
 
 ## Phase H — Liquidity & staking UI
 
-26. [ ] `/liquidity` — add/remove liquidity txs against router/pair; reflect in UI from receipts or indexer.
-27. [ ] **Staking** contract (simple lock + reward) + `/staking` page calling it.
-28. [ ] **Optional:** `apps/indexer` worker — listen for `Swapped`, `Mint`, `Burn`, `Staked` and upsert `OnchainTransaction` / audit rows.
+26. [x] `/liquidity` — add/remove liquidity txs against router/pair; reflect in UI from receipts or indexer.
+27. [x] **Staking** contract (simple lock + reward) + `/staking` page calling it.
+28. [x] **Optional:** `apps/indexer` worker — listen for `Swapped`, `Mint`, `Burn`, `Staked` and upsert `OnchainTransaction` / audit rows.
 
 ---
 
 ## Phase I — Terminal polish (portfolio quality)
 
-29. [ ] **Resizable** panels (e.g. `react-resizable-panels`) on `/trade`.
-30. [ ] **Command palette** (⌘K) — jump to pair, route, or actions.
-31. [ ] **Keyboard shortcuts** for buy/sell focus, cancel, etc.
-32. [ ] **Virtualized** order book rows if depth gets large.
-33. [ ] **Rate limiting** + auth on write routes; Redis for limiter backend if needed.
-34. [ ] **CI** — GitHub Actions: `lint`, `typecheck`, `build`, contract tests.
+29. [x] **Resizable** panels (e.g. `react-resizable-panels`) on `/trade`.
+30. [x] **Command palette** (⌘K) — jump to pair, route, or actions.
+31. [x] **Keyboard shortcuts** for buy/sell focus, cancel, etc.
+32. [x] **Virtualized** order book rows if depth gets large.
+33. [x] **Rate limiting** + auth on write routes; Redis for limiter backend if needed.
+34. [x] **CI** — GitHub Actions: `lint`, `typecheck`, `build`, contract tests.
+
+Phase H/I is implemented as an MVP. Production follow-up work is tracked in [`IMPROVEMENT_PLAN.md`](./IMPROVEMENT_PLAN.md), including signed wallet auth, Redis-backed scaling, deeper tests, indexer backfill, and deployment polish.
 
 ---
 

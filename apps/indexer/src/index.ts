@@ -1,7 +1,8 @@
 import "dotenv/config";
-import { PrismaClient, type Prisma } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import { createPublicClient, http, type Address, type Hash } from "viem";
 import { DEFAULT_PUBLIC_CHAIN_ID, DEFAULT_PUBLIC_RPC_URL, createDexChain, getDemoDexAddresses } from "@dex-terminal/blockchain";
+import { buildEventKey, stringifyBigInts } from "./lib/event-utils.js";
 
 const prisma = new PrismaClient();
 const chainId = Number(process.env.NEXT_PUBLIC_CHAIN_ID ?? DEFAULT_PUBLIC_CHAIN_ID);
@@ -15,6 +16,8 @@ const client = createPublicClient({
   chain: createDexChain({ chainId, rpcUrl }),
   transport: http(rpcUrl),
 });
+const START_BLOCK_LOOKBACK = BigInt(process.env.INDEXER_START_BLOCK_LOOKBACK ?? 2_000);
+const MAX_WRITE_ATTEMPTS = 3;
 
 const routerEventAbi = [
   {
@@ -79,15 +82,10 @@ const stakingEventAbi = [
   },
 ] as const;
 
-function stringifyBigInts(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(
-    JSON.stringify(value, (_key, item: unknown) => (typeof item === "bigint" ? item.toString() : item)),
-  ) as Prisma.InputJsonValue;
-}
-
 async function recordEvent({
   txHash,
   blockNumber,
+  logIndex,
   contractAddress,
   eventName,
   actor,
@@ -95,11 +93,13 @@ async function recordEvent({
 }: {
   txHash: Hash;
   blockNumber: bigint;
+  logIndex: number;
   contractAddress: Address;
   eventName: string;
   actor: Address | undefined;
   args: Record<string, unknown>;
 }) {
+  const eventKey = buildEventKey(txHash, logIndex);
   await prisma.onchainTransaction.upsert({
     where: { txHash },
     update: {
@@ -108,7 +108,7 @@ async function recordEvent({
       toAddress: contractAddress.toLowerCase(),
       method: eventName,
       status: "CONFIRMED",
-      raw: stringifyBigInts(args),
+      raw: stringifyBigInts({ eventKey, args }),
     },
     create: {
       txHash,
@@ -118,22 +118,160 @@ async function recordEvent({
       toAddress: contractAddress.toLowerCase(),
       method: eventName,
       status: "CONFIRMED",
-      raw: stringifyBigInts(args),
+      raw: stringifyBigInts({ eventKey, args }),
     },
   });
-  await prisma.auditLog.create({
-    data: {
+  const existingAudit = await prisma.auditLog.findFirst({
+    where: {
       action: `onchain.${eventName}`,
       entityType: "OnchainTransaction",
-      entityId: txHash,
-      metadata: stringifyBigInts({ chainId, contractAddress, args }),
+      entityId: eventKey,
     },
   });
+  if (existingAudit === null) {
+    await prisma.auditLog.create({
+      data: {
+        action: `onchain.${eventName}`,
+        entityType: "OnchainTransaction",
+        entityId: eventKey,
+        metadata: stringifyBigInts({ chainId, txHash, logIndex, contractAddress, args }),
+      },
+    });
+  }
 }
 
 function actorFromArgs(args: Record<string, unknown>) {
   const value = args.sender ?? args.provider ?? args.user;
   return typeof value === "string" && value.startsWith("0x") ? (value as Address) : undefined;
+}
+
+type IndexedLog = {
+  transactionHash: Hash;
+  blockNumber: bigint;
+  logIndex: number;
+  eventName: string;
+  args: Record<string, unknown>;
+};
+
+async function writeWithRetry(log: IndexedLog, contractAddress: Address) {
+  let attempt = 0;
+  while (attempt < MAX_WRITE_ATTEMPTS) {
+    try {
+      await recordEvent({
+        txHash: log.transactionHash,
+        blockNumber: log.blockNumber,
+        logIndex: log.logIndex,
+        contractAddress,
+        eventName: log.eventName,
+        actor: actorFromArgs(log.args),
+        args: log.args,
+      });
+      return;
+    } catch (error) {
+      attempt += 1;
+      if (attempt >= MAX_WRITE_ATTEMPTS) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+    }
+  }
+}
+
+async function getCursor(contractAddress: Address, eventGroup: string, currentBlock: bigint) {
+  const cursor = await prisma.indexerCursor.findUnique({
+    where: {
+      chainId_contractAddress_eventGroup: {
+        chainId,
+        contractAddress: contractAddress.toLowerCase(),
+        eventGroup,
+      },
+    },
+  });
+
+  if (cursor !== null) {
+    return cursor.lastBlock + 1n;
+  }
+
+  return currentBlock > START_BLOCK_LOOKBACK ? currentBlock - START_BLOCK_LOOKBACK : 0n;
+}
+
+async function updateCursor(contractAddress: Address, eventGroup: string, lastBlock: bigint) {
+  await prisma.indexerCursor.upsert({
+    where: {
+      chainId_contractAddress_eventGroup: {
+        chainId,
+        contractAddress: contractAddress.toLowerCase(),
+        eventGroup,
+      },
+    },
+    update: { lastBlock },
+    create: {
+      chainId,
+      contractAddress: contractAddress.toLowerCase(),
+      eventGroup,
+      lastBlock,
+    },
+  });
+}
+
+async function processLogs(logs: IndexedLog[], contractAddress: Address, eventGroup: string) {
+  let latestBlock: bigint | undefined;
+  for (const log of logs.sort((left, right) => Number(left.blockNumber - right.blockNumber))) {
+    await writeWithRetry(log, contractAddress);
+    latestBlock = log.blockNumber;
+  }
+
+  if (latestBlock !== undefined) {
+    await updateCursor(contractAddress, eventGroup, latestBlock);
+  }
+}
+
+function normalizeLogs(
+  logs: Array<{
+    transactionHash: Hash;
+    blockNumber: bigint | null;
+    logIndex: number;
+    eventName?: string | undefined;
+    args?: Record<string, unknown> | undefined;
+  }>,
+): IndexedLog[] {
+  return logs.flatMap((log) =>
+    log.blockNumber === null || log.eventName === undefined || log.args === undefined
+      ? []
+      : [
+          {
+            transactionHash: log.transactionHash,
+            blockNumber: log.blockNumber,
+            logIndex: log.logIndex,
+            eventName: log.eventName,
+            args: log.args,
+          },
+        ],
+  );
+}
+
+async function backfillRouter(routerAddress: Address) {
+  const currentBlock = await client.getBlockNumber();
+  const fromBlock = await getCursor(routerAddress, "router", currentBlock);
+  const logs = await client.getLogs({
+    address: routerAddress,
+    events: routerEventAbi,
+    fromBlock,
+    toBlock: currentBlock,
+  });
+  await processLogs(normalizeLogs(logs), routerAddress, "router");
+}
+
+async function backfillStaking(stakingAddress: Address) {
+  const currentBlock = await client.getBlockNumber();
+  const fromBlock = await getCursor(stakingAddress, "staking", currentBlock);
+  const logs = await client.getLogs({
+    address: stakingAddress,
+    events: stakingEventAbi,
+    fromBlock,
+    toBlock: currentBlock,
+  });
+  await processLogs(normalizeLogs(logs), stakingAddress, "staking");
 }
 
 function watchRouter() {
@@ -147,16 +285,9 @@ function watchRouter() {
     address: routerAddress,
     abi: routerEventAbi,
     onLogs: (logs) => {
-      for (const log of logs) {
-        void recordEvent({
-          txHash: log.transactionHash,
-          blockNumber: log.blockNumber,
-          contractAddress: routerAddress,
-          eventName: log.eventName,
-          actor: actorFromArgs(log.args),
-          args: log.args,
-        }).catch((error: unknown) => console.error("[indexer] router event write failed", error));
-      }
+      void processLogs(normalizeLogs(logs), routerAddress, "router").catch((error: unknown) =>
+        console.error("[indexer] router event write failed", error),
+      );
     },
     onError: (error) => console.error("[indexer] router watcher failed", error),
   });
@@ -173,21 +304,24 @@ function watchStaking() {
     address: stakingAddress,
     abi: stakingEventAbi,
     onLogs: (logs) => {
-      for (const log of logs) {
-        void recordEvent({
-          txHash: log.transactionHash,
-          blockNumber: log.blockNumber,
-          contractAddress: stakingAddress,
-          eventName: log.eventName,
-          actor: actorFromArgs(log.args),
-          args: log.args,
-        }).catch((error: unknown) => console.error("[indexer] staking event write failed", error));
-      }
+      void processLogs(normalizeLogs(logs), stakingAddress, "staking").catch((error: unknown) =>
+        console.error("[indexer] staking event write failed", error),
+      );
     },
     onError: (error) => console.error("[indexer] staking watcher failed", error),
   });
 }
 
+async function backfill() {
+  if (addresses.demoSwapRouter !== undefined) {
+    await backfillRouter(addresses.demoSwapRouter);
+  }
+  if (addresses.demoStaking !== undefined) {
+    await backfillStaking(addresses.demoStaking);
+  }
+}
+
+await backfill();
 const unwatch = [watchRouter(), watchStaking()];
 
 async function shutdown() {

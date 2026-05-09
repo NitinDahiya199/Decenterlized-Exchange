@@ -8,6 +8,23 @@ export const serverEnvSchema = z.object({
   API_HOST: z.string().default("0.0.0.0"),
   API_ORIGIN: z.string().url().optional(),
   SESSION_SECRET: z.string().min(32).optional(),
+}).superRefine((env, context) => {
+  if (env.NODE_ENV === "production") {
+    if (env.DATABASE_URL === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "DATABASE_URL is required in production",
+        path: ["DATABASE_URL"],
+      });
+    }
+    if (env.SESSION_SECRET === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "SESSION_SECRET is required in production",
+        path: ["SESSION_SECRET"],
+      });
+    }
+  }
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
