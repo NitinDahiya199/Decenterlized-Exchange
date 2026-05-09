@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import { Prisma } from "@prisma/client";
 import { Server } from "socket.io";
 import {
@@ -23,7 +24,7 @@ import {
   type OrderbookLevel,
   type OrderbookResponse,
 } from "@dex-terminal/types";
-import type { FastifyReply } from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import { createAndMatchOrder } from "./lib/matcher.js";
 import { prisma } from "./lib/prisma.js";
 import {
@@ -49,6 +50,14 @@ const pairInclude = {
 await fastify.register(cors, {
   origin: env.API_ORIGIN ?? "http://localhost:3000",
   credentials: true,
+});
+await fastify.register(rateLimit, {
+  global: false,
+  errorResponseBuilder: (_request, context) =>
+    apiError(ApiErrorCodes.RATE_LIMITED, "Too many write requests", {
+      max: context.max,
+      after: context.after,
+    }),
 });
 
 type PairWithTokens = Prisma.PairGetPayload<{ include: typeof pairInclude }>;
@@ -104,6 +113,15 @@ function sendOrderNotFound(reply: FastifyReply, id: string) {
 
 function sendUnauthorized(reply: FastifyReply) {
   return reply.status(401).send(apiError(ApiErrorCodes.UNAUTHORIZED, "Wallet session required"));
+}
+
+function sendForbidden(reply: FastifyReply, message = "Wallet session does not own this resource") {
+  return reply.status(403).send(apiError(ApiErrorCodes.FORBIDDEN, message));
+}
+
+function getSession(request: FastifyRequest) {
+  const token = getSessionTokenFromCookie(request.headers.cookie);
+  return token === null ? null : verifySessionToken(token, env.SESSION_SECRET);
 }
 
 async function findPairBySlug(slug: string) {
@@ -454,14 +472,39 @@ await fastify.get("/wallets/:address/balances", async (request, reply) => {
   });
 });
 
-await fastify.post("/orders", async (request, reply) => {
+await fastify.post(
+  "/orders",
+  {
+    config: {
+      rateLimit: {
+        max: 20,
+        timeWindow: "1 minute",
+      },
+    },
+  },
+  async (request, reply) => {
   const bodyResult = createOrderBodySchema.safeParse(request.body);
   if (!bodyResult.success) {
     return sendValidationError(reply, "Invalid order body", bodyResult.error);
   }
 
+  const session = getSession(request);
+  if (session === null) {
+    return sendUnauthorized(reply);
+  }
+  if (
+    bodyResult.data.walletAddress !== undefined &&
+    bodyResult.data.walletAddress.toLowerCase() !== session.address.toLowerCase()
+  ) {
+    return sendForbidden(reply, "Order wallet does not match the active session");
+  }
+
   try {
-    const result = await createAndMatchOrder(bodyResult.data);
+    const result = await createAndMatchOrder(bodyResult.data, {
+      userId: session.userId,
+      walletId: session.walletId,
+      walletAddress: session.address,
+    });
     void emitMarketSnapshot(result.order.pair.slug);
 
     return reply.status(201).send({
@@ -475,9 +518,20 @@ await fastify.post("/orders", async (request, reply) => {
 
     throw error;
   }
-});
+  },
+);
 
-await fastify.post("/wallets/link", async (request, reply) => {
+await fastify.post(
+  "/wallets/link",
+  {
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: "1 minute",
+      },
+    },
+  },
+  async (request, reply) => {
   const bodyResult = linkWalletBodySchema.safeParse(request.body);
   if (!bodyResult.success) {
     return sendValidationError(reply, "Invalid wallet link body", bodyResult.error);
@@ -547,12 +601,28 @@ await fastify.post("/wallets/link", async (request, reply) => {
       isPrimary: linkedWallet.isPrimary,
     },
   };
-});
+  },
+);
 
-await fastify.delete("/orders/:id", async (request, reply) => {
+await fastify.delete(
+  "/orders/:id",
+  {
+    config: {
+      rateLimit: {
+        max: 30,
+        timeWindow: "1 minute",
+      },
+    },
+  },
+  async (request, reply) => {
   const paramsResult = orderIdParamsSchema.safeParse(request.params);
   if (!paramsResult.success) {
     return sendValidationError(reply, "Invalid order id", paramsResult.error);
+  }
+
+  const session = getSession(request);
+  if (session === null) {
+    return sendUnauthorized(reply);
   }
 
   const { id } = paramsResult.data;
@@ -563,6 +633,9 @@ await fastify.delete("/orders/:id", async (request, reply) => {
 
   if (order === null) {
     return sendOrderNotFound(reply, id);
+  }
+  if (order.userId !== session.userId) {
+    return sendForbidden(reply);
   }
 
   if (order.status !== "OPEN" && order.status !== "PARTIALLY_FILLED") {
@@ -586,7 +659,8 @@ await fastify.delete("/orders/:id", async (request, reply) => {
     order: serializeOrder(cancelledOrder),
     trades: [],
   };
-});
+  },
+);
 
 fastify.setNotFoundHandler((_request, reply) =>
   reply.status(404).send(apiError(ApiErrorCodes.NOT_FOUND, "Route not found")),

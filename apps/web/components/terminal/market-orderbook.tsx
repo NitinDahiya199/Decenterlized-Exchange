@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { io } from "socket.io-client";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   marketOrderbookEventName,
   orderbookResponseSchema,
@@ -23,6 +24,7 @@ function formatLevel(level: OrderbookLevel | undefined) {
 
 export function MarketOrderbook({ slug = "ETH-USDC" }: { slug?: string }) {
   const [orderbook, setOrderbook] = useState<OrderbookResponse | null>(null);
+  const parentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,26 +62,61 @@ export function MarketOrderbook({ slug = "ETH-USDC" }: { slug?: string }) {
     };
   }, [slug]);
 
-  const bids = Array.from({ length: 6 }, (_, index) => formatLevel(orderbook?.bids[index]));
-  const asks = Array.from({ length: 6 }, (_, index) => formatLevel(orderbook?.asks[index]));
+  const rows = useMemo(() => {
+    const asks = Array.from({ length: 24 }, (_, index) => ({
+      id: `a-${index}`,
+      side: "ask" as const,
+      ...formatLevel(orderbook?.asks[index]),
+    })).reverse();
+    const bids = Array.from({ length: 24 }, (_, index) => ({
+      id: `b-${index}`,
+      side: "bid" as const,
+      ...formatLevel(orderbook?.bids[index]),
+    }));
+
+    return [...asks, { id: "mid", side: "mid" as const, price: "Spread", quantity: "—" }, ...bids];
+  }, [orderbook]);
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 24,
+    overscan: 8,
+  });
 
   return (
-    <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
-      <div className="text-zinc-500">Bid</div>
-      <div className="text-right text-zinc-500">Size</div>
-      {bids.map((level, index) => (
-        <div key={`b-${index}`} className="contents text-emerald-400/80">
-          <div>{level.price}</div>
-          <div className="text-right text-zinc-500">{level.quantity}</div>
+    <div className="font-mono text-[11px]">
+      <div className="grid grid-cols-2 gap-2 pb-2 text-zinc-500">
+        <div>Price</div>
+        <div className="text-right">Size</div>
+      </div>
+      <div ref={parentRef} className="h-[360px] overflow-auto rounded-lg border border-white/5 bg-black/10">
+        <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+          {virtualizer.getVirtualItems().map((virtualRow) => {
+            const row = rows[virtualRow.index];
+            if (row === undefined) {
+              return null;
+            }
+            const rowClass =
+              row.side === "bid"
+                ? "text-emerald-400/80"
+                : row.side === "ask"
+                  ? "text-rose-400/80"
+                  : "text-cyan-300/80";
+
+            return (
+              <div
+                key={row.id}
+                className={`absolute left-0 grid w-full grid-cols-2 gap-2 px-2 ${rowClass}`}
+                style={{ height: virtualRow.size, transform: `translateY(${virtualRow.start}px)` }}
+              >
+                <div>{row.price}</div>
+                <div className="text-right text-zinc-500">{row.quantity}</div>
+              </div>
+            );
+          })}
         </div>
-      ))}
-      <div className="col-span-2 my-2 border-t border-white/10" />
-      {asks.map((level, index) => (
-        <div key={`a-${index}`} className="contents text-rose-400/80">
-          <div>{level.price}</div>
-          <div className="text-right text-zinc-500">{level.quantity}</div>
-        </div>
-      ))}
+      </div>
     </div>
   );
 }

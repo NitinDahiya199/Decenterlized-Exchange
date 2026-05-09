@@ -10,6 +10,7 @@ export type PublicChainEnv = {
   NEXT_PUBLIC_DEMO_WETH_ADDRESS?: string | undefined;
   NEXT_PUBLIC_DEMO_USDC_ADDRESS?: string | undefined;
   NEXT_PUBLIC_DEMO_SWAP_ROUTER_ADDRESS?: string | undefined;
+  NEXT_PUBLIC_DEMO_STAKING_ADDRESS?: string | undefined;
 };
 
 type DemoDexDeployment = {
@@ -18,6 +19,7 @@ type DemoDexDeployment = {
   demoWeth: string | null;
   demoUsdc: string | null;
   demoSwapRouter: string | null;
+  demoStaking?: string | null;
 };
 
 export const erc20Abi = [
@@ -52,9 +54,37 @@ export const erc20Abi = [
     inputs: [],
     outputs: [{ name: "", type: "string" }],
   },
+  {
+    type: "function",
+    name: "transfer",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "to", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
 ] as const;
 
 export const demoSwapRouterAbi = [
+  {
+    type: "function",
+    name: "addLiquidity",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "amount0", type: "uint256" },
+      { name: "amount1", type: "uint256" },
+      { name: "to", type: "address" },
+    ],
+    outputs: [{ name: "shares", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
   {
     type: "function",
     name: "getAmountOut",
@@ -67,6 +97,35 @@ export const demoSwapRouterAbi = [
   },
   {
     type: "function",
+    name: "removeLiquidity",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "shares", type: "uint256" },
+      { name: "amount0Min", type: "uint256" },
+      { name: "amount1Min", type: "uint256" },
+      { name: "to", type: "address" },
+    ],
+    outputs: [
+      { name: "amount0", type: "uint256" },
+      { name: "amount1", type: "uint256" },
+    ],
+  },
+  {
+    type: "function",
+    name: "reserve0",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "reserve1",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
     name: "swapExactTokensForTokens",
     stateMutability: "nonpayable",
     inputs: [
@@ -76,6 +135,51 @@ export const demoSwapRouterAbi = [
       { name: "to", type: "address" },
     ],
     outputs: [{ name: "amountOut", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "totalSupply",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+export const demoStakingAbi = [
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "claim",
+    stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [{ name: "reward", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "earned",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "stake",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "amount", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "withdraw",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "amount", type: "uint256" }],
+    outputs: [],
   },
 ] as const;
 
@@ -150,5 +254,8 @@ export function getDemoDexAddresses(env: PublicChainEnv = {}) {
     demoSwapRouter:
       optionalAddress(env.NEXT_PUBLIC_DEMO_SWAP_ROUTER_ADDRESS) ??
       (deployedOnActiveChain ? optionalAddress(deployment.demoSwapRouter) : undefined),
+    demoStaking:
+      optionalAddress(env.NEXT_PUBLIC_DEMO_STAKING_ADDRESS) ??
+      (deployedOnActiveChain ? optionalAddress(deployment.demoStaking) : undefined),
   };
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useAccount } from "wagmi";
 import {
   orderMutationResponseSchema,
@@ -25,12 +25,69 @@ function sideButtonClass(active: boolean, side: OrderSide) {
 
 export function OrderEntry({ slug = "ETH-USDC" }: { slug?: string }) {
   const { address } = useAccount();
+  const formRef = useRef<HTMLFormElement>(null);
   const [side, setSide] = useState<OrderSide>("BUY");
   const [type, setType] = useState<OrderType>("LIMIT");
   const [price, setPrice] = useState("3025");
   const [quantity, setQuantity] = useState("0.1");
   const [status, setStatus] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    function targetIsEditable(target: EventTarget | null) {
+      return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (targetIsEditable(event.target)) {
+        return;
+      }
+
+      if (event.altKey && event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        setSide("BUY");
+      }
+      if (event.altKey && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        setSide("SELL");
+      }
+      if (event.altKey && event.key.toLowerCase() === "m") {
+        event.preventDefault();
+        setType("MARKET");
+      }
+      if (event.altKey && event.key.toLowerCase() === "l") {
+        event.preventDefault();
+        setType("LIMIT");
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        event.preventDefault();
+        formRef.current?.requestSubmit();
+      }
+    }
+
+    function handleSetSide(event: Event) {
+      const detail = (event as CustomEvent<OrderSide>).detail;
+      if (detail === "BUY" || detail === "SELL") {
+        setSide(detail);
+      }
+    }
+
+    function handleSetType(event: Event) {
+      const detail = (event as CustomEvent<OrderType>).detail;
+      if (detail === "LIMIT" || detail === "MARKET") {
+        setType(detail);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("trade:set-side", handleSetSide);
+    window.addEventListener("trade:set-type", handleSetType);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("trade:set-side", handleSetSide);
+      window.removeEventListener("trade:set-type", handleSetType);
+    };
+  }, []);
 
   async function submitOrder(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -72,7 +129,7 @@ export function OrderEntry({ slug = "ETH-USDC" }: { slug?: string }) {
   }
 
   return (
-    <form className="flex flex-col gap-3" onSubmit={submitOrder}>
+    <form ref={formRef} className="flex flex-col gap-3" onSubmit={submitOrder}>
       <div className="flex gap-2">
         {(["BUY", "SELL"] as const).map((nextSide) => (
           <button
@@ -128,6 +185,7 @@ export function OrderEntry({ slug = "ETH-USDC" }: { slug?: string }) {
         {submitting ? "Placing..." : "Place order"}
       </button>
       {status ? <p className="text-[11px] text-zinc-500">{status}</p> : null}
+      <p className="text-[10px] text-zinc-600">Shortcuts: Alt+B/S side · Alt+L/M type · Ctrl+Enter submit</p>
     </form>
   );
 }

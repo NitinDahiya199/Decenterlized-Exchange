@@ -19,6 +19,12 @@ export type SimulatorOrderResult = {
   trades: Prisma.TradeGetPayload<object>[];
 };
 
+export type OrderActor = {
+  userId: string;
+  walletId: string;
+  walletAddress: string;
+};
+
 function minDecimal(left: Prisma.Decimal, right: Prisma.Decimal): Prisma.Decimal {
   return left.lessThan(right) ? left : right;
 }
@@ -299,7 +305,10 @@ async function matchOrder(
   return { order: updatedOrder, trades };
 }
 
-export async function createAndMatchOrder(body: CreateOrderBody): Promise<SimulatorOrderResult> {
+export async function createAndMatchOrder(
+  body: CreateOrderBody,
+  actor?: OrderActor,
+): Promise<SimulatorOrderResult> {
   return prisma.$transaction(
     async (tx) => {
       const pair = await tx.pair.findUnique({
@@ -311,15 +320,30 @@ export async function createAndMatchOrder(body: CreateOrderBody): Promise<Simula
         throw new Error("PAIR_NOT_FOUND");
       }
 
-      const { user } = await getOrCreateSimulatorAccount(tx, pair);
+      const account = actor ?? (await getOrCreateSimulatorAccount(tx, pair));
+      const userId = "user" in account ? account.user.id : account.userId;
+      const walletId = "wallet" in account ? account.wallet.id : account.walletId;
+      const walletAddress = "wallet" in account ? account.wallet.address : account.walletAddress;
+      await ensureBalance(tx, {
+        userId,
+        walletId,
+        tokenId: pair.baseTokenId,
+        initialAvailable: "100",
+      });
+      await ensureBalance(tx, {
+        userId,
+        walletId,
+        tokenId: pair.quoteTokenId,
+        initialAvailable: "200000",
+      });
       const orderData: Prisma.OrderUncheckedCreateInput = {
-        userId: user.id,
+        userId,
         pairId: pair.id,
         side: body.side,
         type: body.type,
         price: body.type === "LIMIT" ? body.price ?? null : null,
         quantity: body.quantity,
-        ...(body.walletAddress !== undefined ? { walletAddress: body.walletAddress } : {}),
+        walletAddress,
       };
       const order: MatchOrder = await tx.order.create({
         data: orderData,

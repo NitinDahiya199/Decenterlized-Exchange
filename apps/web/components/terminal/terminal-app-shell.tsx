@@ -7,6 +7,7 @@ import { motion } from "framer-motion";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { useMarketSocket } from "@/hooks/use-market-socket";
 import { useWalletLink } from "@/hooks/use-wallet-link";
+import { CommandPalette } from "./command-palette";
 import { TERMINAL_NAV } from "./nav";
 
 function cx(...parts: (string | false | undefined)[]): string {
@@ -88,15 +89,15 @@ export function TerminalAppShell({ children }: { children: ReactNode }) {
                 {walletLink.error}
               </span>
             ) : null}
-            <ConnectButton
-              accountStatus="address"
-              chainStatus="icon"
-              showBalance={false}
-            />
+            <span className="hidden rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-500 lg:inline">
+              Ctrl K
+            </span>
+            <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false} />
           </div>
         </header>
         <main className="min-h-0 flex-1 overflow-auto p-4 md:p-6">{children}</main>
       </div>
+      <CommandPalette />
     </div>
   );
 }

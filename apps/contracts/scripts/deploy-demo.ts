@@ -5,6 +5,8 @@ import { ethers, network } from "hardhat";
 const TOKEN_SUPPLY = ethers.parseEther("10000000");
 const ETH_LIQUIDITY = ethers.parseEther("1000");
 const USDC_LIQUIDITY = ethers.parseUnits("3000000", 18);
+const STAKING_REWARD_RATE = ethers.parseUnits("0.000001", 18);
+const STAKING_REWARDS = ethers.parseEther("100000");
 
 async function main(): Promise<void> {
   const [deployer] = await ethers.getSigners();
@@ -26,7 +28,17 @@ async function main(): Promise<void> {
 
   await (await weth.approve(await router.getAddress(), ETH_LIQUIDITY)).wait();
   await (await usdc.approve(await router.getAddress(), USDC_LIQUIDITY)).wait();
-  await (await router.addLiquidity(ETH_LIQUIDITY, USDC_LIQUIDITY)).wait();
+  await (await router.addLiquidity(ETH_LIQUIDITY, USDC_LIQUIDITY, deployer.address)).wait();
+
+  const stakingFactory = await ethers.getContractFactory("DemoStaking");
+  const staking = await stakingFactory.deploy(
+    await weth.getAddress(),
+    await usdc.getAddress(),
+    STAKING_REWARD_RATE,
+    deployer.address,
+  );
+  await staking.waitForDeployment();
+  await (await usdc.transfer(await staking.getAddress(), STAKING_REWARDS)).wait();
 
   const deployment = {
     chainId: Number((await ethers.provider.getNetwork()).chainId),
@@ -34,6 +46,7 @@ async function main(): Promise<void> {
     demoWeth: await weth.getAddress(),
     demoUsdc: await usdc.getAddress(),
     demoSwapRouter: await router.getAddress(),
+    demoStaking: await staking.getAddress(),
   };
 
   const outputPath = path.resolve(__dirname, "../../../packages/blockchain/src/deployments.json");

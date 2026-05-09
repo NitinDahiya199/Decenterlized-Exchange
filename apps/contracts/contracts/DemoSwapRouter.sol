@@ -9,8 +9,13 @@ contract DemoSwapRouter is Ownable {
     IERC20 public immutable token1;
     uint256 public reserve0;
     uint256 public reserve1;
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
 
-    event LiquidityAdded(address indexed provider, uint256 amount0, uint256 amount1);
+    event LiquidityAdded(address indexed provider, uint256 amount0, uint256 amount1, uint256 shares, address indexed to);
+    event LiquidityRemoved(address indexed provider, uint256 amount0, uint256 amount1, uint256 shares, address indexed to);
+    event Mint(address indexed sender, uint256 amount0, uint256 amount1, uint256 shares, address indexed to);
+    event Burn(address indexed sender, uint256 amount0, uint256 amount1, uint256 shares, address indexed to);
     event Swap(address indexed sender, address indexed tokenIn, uint256 amountIn, uint256 amountOut, address indexed to);
 
     constructor(address token0_, address token1_, address owner_) Ownable(owner_) {
@@ -21,13 +26,52 @@ contract DemoSwapRouter is Ownable {
         token1 = IERC20(token1_);
     }
 
-    function addLiquidity(uint256 amount0, uint256 amount1) external onlyOwner {
+    function addLiquidity(uint256 amount0, uint256 amount1, address to) external returns (uint256 shares) {
+        require(to != address(0), "to zero");
         require(amount0 > 0 && amount1 > 0, "zero amount");
+
+        if (totalSupply == 0) {
+            shares = _sqrt(amount0 * amount1);
+        } else {
+            shares = _min((amount0 * totalSupply) / reserve0, (amount1 * totalSupply) / reserve1);
+        }
+        require(shares > 0, "zero shares");
+
         token0.transferFrom(msg.sender, address(this), amount0);
         token1.transferFrom(msg.sender, address(this), amount1);
         reserve0 += amount0;
         reserve1 += amount1;
-        emit LiquidityAdded(msg.sender, amount0, amount1);
+        totalSupply += shares;
+        balanceOf[to] += shares;
+
+        emit LiquidityAdded(msg.sender, amount0, amount1, shares, to);
+        emit Mint(msg.sender, amount0, amount1, shares, to);
+    }
+
+    function removeLiquidity(
+        uint256 shares,
+        uint256 amount0Min,
+        uint256 amount1Min,
+        address to
+    ) external returns (uint256 amount0, uint256 amount1) {
+        require(to != address(0), "to zero");
+        require(shares > 0, "zero shares");
+        require(balanceOf[msg.sender] >= shares, "insufficient shares");
+
+        amount0 = (shares * reserve0) / totalSupply;
+        amount1 = (shares * reserve1) / totalSupply;
+        require(amount0 >= amount0Min && amount1 >= amount1Min, "slippage");
+
+        balanceOf[msg.sender] -= shares;
+        totalSupply -= shares;
+        reserve0 -= amount0;
+        reserve1 -= amount1;
+
+        token0.transfer(to, amount0);
+        token1.transfer(to, amount1);
+
+        emit LiquidityRemoved(msg.sender, amount0, amount1, shares, to);
+        emit Burn(msg.sender, amount0, amount1, shares, to);
     }
 
     function getAmountOut(address tokenIn, uint256 amountIn) public view returns (uint256 amountOut) {
@@ -69,5 +113,22 @@ contract DemoSwapRouter is Ownable {
         }
 
         emit Swap(msg.sender, tokenIn, amountIn, amountOut, to);
+    }
+
+    function _min(uint256 a, uint256 b) private pure returns (uint256) {
+        return a < b ? a : b;
+    }
+
+    function _sqrt(uint256 y) private pure returns (uint256 z) {
+        if (y > 3) {
+            z = y;
+            uint256 x = (y / 2) + 1;
+            while (x < z) {
+                z = x;
+                x = ((y / x) + x) / 2;
+            }
+        } else if (y != 0) {
+            z = 1;
+        }
     }
 }
