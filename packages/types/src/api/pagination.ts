@@ -12,9 +12,7 @@ export const offsetPaginationQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
-export type OffsetPaginationQuery = z.infer<
-  typeof offsetPaginationQuerySchema
->;
+export type OffsetPaginationQuery = z.infer<typeof offsetPaginationQuerySchema>;
 
 export function paginatedResponseSchema<T extends z.ZodTypeAny>(item: T) {
   return z.object({

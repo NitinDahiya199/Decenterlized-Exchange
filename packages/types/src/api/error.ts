@@ -10,8 +10,7 @@ export const ApiErrorCodes = {
   INTERNAL: "INTERNAL",
 } as const;
 
-export type ApiErrorCode =
-  (typeof ApiErrorCodes)[keyof typeof ApiErrorCodes];
+export type ApiErrorCode = (typeof ApiErrorCodes)[keyof typeof ApiErrorCodes];
 
 export const apiErrorBodySchema = z.object({
   code: z.string(),

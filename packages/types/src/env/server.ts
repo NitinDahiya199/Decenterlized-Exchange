@@ -7,13 +7,12 @@ export const serverEnvSchema = z.object({
   API_PORT: z.coerce.number().int().positive().default(4000),
   API_HOST: z.string().default("0.0.0.0"),
   API_ORIGIN: z.string().url().optional(),
+  SESSION_SECRET: z.string().min(32).optional(),
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
 
-export function parseServerEnv(
-  input: Record<string, string | undefined>,
-): ServerEnv {
+export function parseServerEnv(input: Record<string, string | undefined>): ServerEnv {
   return serverEnvSchema.parse(input);
 }
 
