@@ -80,10 +80,10 @@ Work in `apps/web` and `packages/blockchain`.
 
 Work in `apps/contracts` + `packages/blockchain`.
 
-22. [ ] ERC-20 **demo tokens** + minimal **factory** or fixed deploy script.
-23. [ ] **AMM** (Uniswap V2–style) `Factory` / `Pair` / `Router` **or** a minimal `Router` + one pool — keep scope small and tested.
-24. [ ] **Deploy** to your devnet; write addresses to `packages/blockchain` (or env) — **no secrets** in git.
-25. [ ] `/swap` — use Wagmi to call `swapExactTokensForTokens` (or your router ABI); show tx status and link to explorer.
+22. [x] ERC-20 **demo tokens** + minimal **factory** or fixed deploy script.
+23. [x] **AMM** (Uniswap V2–style) `Factory` / `Pair` / `Router` **or** a minimal `Router` + one pool — keep scope small and tested.
+24. [x] **Deploy** to your devnet; write addresses to `packages/blockchain` (or env) — **no secrets** in git.
+25. [x] `/swap` — use Wagmi to call `swapExactTokensForTokens` (or your router ABI); show tx status and link to explorer.
 
 ---
 

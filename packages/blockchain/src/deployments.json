@@ -1,0 +1,7 @@
+{
+  "chainId": 11155111,
+  "network": "sepolia",
+  "demoWeth": "0xA9f16F4e1bedC8a916E7037651Fb4d7511481149",
+  "demoUsdc": "0x9fd44607CD02722FBE6cE194806CD501E3891625",
+  "demoSwapRouter": "0xbCCF20464baf621E4098a3d11B819C1256BB6c27"
+}
