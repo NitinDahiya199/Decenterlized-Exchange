@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "files": [],
+  "references": [
+    { "path": "./packages/types" },
+    { "path": "./packages/ui" },
+    { "path": "./packages/blockchain" },
+    { "path": "./apps/web" },
+    { "path": "./apps/api" },
+    { "path": "./apps/contracts" },
+    { "path": "./apps/indexer" },
+    { "path": "./apps/admin" }
+  ]
+}

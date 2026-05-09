@@ -1,0 +1,42 @@
+# Dependencies
+node_modules
+.pnpm-store
+
+# Build / cache
+dist
+.next
+out
+.turbo
+*.tsbuildinfo
+
+# Env (never commit secrets)
+.env
+.ENV
+.env.local
+.env.*.local
+
+# IDE
+.idea
+.vscode/*
+!.vscode/extensions.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Hardhat / Foundry
+apps/contracts/cache
+apps/contracts/artifacts
+apps/contracts/typechain-types
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Test / coverage
+coverage
+
+# Prisma
+apps/api/prisma/*.db
+apps/api/prisma/*.db-journal

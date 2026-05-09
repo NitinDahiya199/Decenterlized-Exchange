@@ -1,0 +1,22 @@
+# Optional local dependencies for development.
+# Neon can replace Postgres; adjust DATABASE_URL accordingly.
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dex
+      POSTGRES_PASSWORD: dex
+      POSTGRES_DB: dex_terminal
+    ports:
+      - "5432:5432"
+    volumes:
+      - dex_pg_data:/var/lib/postgresql/data
+
+volumes:
+  dex_pg_data:

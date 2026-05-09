@@ -1,0 +1,311 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderType {
+  LIMIT
+  MARKET
+}
+
+enum OrderStatus {
+  OPEN
+  PARTIALLY_FILLED
+  FILLED
+  CANCELLED
+  REJECTED
+}
+
+enum CandleInterval {
+  M1
+  M5
+  M15
+  H1
+  H4
+  D1
+  W1
+}
+
+enum ChainTxStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String?  @unique
+  displayName  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  wallets            Wallet[]
+  orders             Order[]
+  balances           Balance[]
+  liquidityPositions LiquidityPosition[]
+  stakingPositions   StakingPosition[]
+  notifications      Notification[]
+  watchlists         Watchlist[]
+  auditLogs          AuditLog[]          @relation("AuditActor")
+}
+
+model Wallet {
+  id        String   @id @default(cuid())
+  userId    String
+  address   String
+  chainId   Int
+  label     String?
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  balances Balance[]
+
+  @@unique([address, chainId])
+  @@index([userId])
+}
+
+model Token {
+  id               String   @id @default(cuid())
+  symbol           String
+  name             String
+  decimals         Int
+  contractAddress  String?
+  chainId          Int
+  isNative         Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  basePairs  Pair[] @relation("BaseToken")
+  quotePairs Pair[] @relation("QuoteToken")
+  balances   Balance[]
+
+  @@unique([symbol, chainId])
+  @@index([chainId, contractAddress])
+}
+
+model Pair {
+  id           String   @id @default(cuid())
+  baseTokenId  String
+  quoteTokenId String
+  slug         String   @unique
+  createdAt    DateTime @default(now())
+
+  baseToken  Token @relation("BaseToken", fields: [baseTokenId], references: [id], onDelete: Restrict)
+  quoteToken Token @relation("QuoteToken", fields: [quoteTokenId], references: [id], onDelete: Restrict)
+
+  orders             Order[]
+  trades             Trade[]
+  candles            Candle[]
+  liquidityPool      LiquidityPool?
+  watchlistItems     WatchlistItem[]
+
+  @@unique([baseTokenId, quoteTokenId])
+  @@index([slug])
+}
+
+model Order {
+  id              String      @id @default(cuid())
+  userId          String
+  pairId          String
+  side            OrderSide
+  type            OrderType
+  status          OrderStatus @default(OPEN)
+  price           Decimal?    @db.Decimal(38, 18)
+  quantity        Decimal     @db.Decimal(38, 18)
+  filledQuantity  Decimal     @default(0) @db.Decimal(38, 18)
+  walletAddress   String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pair Pair @relation(fields: [pairId], references: [id], onDelete: Restrict)
+
+  makerTrades Trade[] @relation("MakerOrder")
+  takerTrades Trade[] @relation("TakerOrder")
+
+  @@index([pairId, status, createdAt])
+  @@index([userId, createdAt])
+}
+
+model Trade {
+  id           String    @id @default(cuid())
+  pairId       String
+  makerOrderId String?
+  takerOrderId String?
+  side         OrderSide
+  price        Decimal   @db.Decimal(38, 18)
+  quantity     Decimal   @db.Decimal(38, 18)
+  executedAt   DateTime  @default(now())
+
+  pair       Pair   @relation(fields: [pairId], references: [id], onDelete: Cascade)
+  makerOrder Order? @relation("MakerOrder", fields: [makerOrderId], references: [id], onDelete: SetNull)
+  takerOrder Order? @relation("TakerOrder", fields: [takerOrderId], references: [id], onDelete: SetNull)
+
+  @@index([pairId, executedAt])
+}
+
+model Balance {
+  id          String   @id @default(cuid())
+  userId      String
+  tokenId     String
+  walletId    String
+  available   Decimal  @default(0) @db.Decimal(38, 18)
+  locked      Decimal  @default(0) @db.Decimal(38, 18)
+  simulated   Boolean  @default(true)
+  updatedAt   DateTime @updatedAt
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token  Token  @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tokenId, walletId])
+  @@index([userId])
+  @@index([walletId])
+}
+
+model Candle {
+  id       String         @id @default(cuid())
+  pairId   String
+  interval CandleInterval
+  open     Decimal        @db.Decimal(38, 18)
+  high     Decimal        @db.Decimal(38, 18)
+  low      Decimal        @db.Decimal(38, 18)
+  close    Decimal        @db.Decimal(38, 18)
+  volume   Decimal        @default(0) @db.Decimal(38, 18)
+  bucket   DateTime
+
+  pair Pair @relation(fields: [pairId], references: [id], onDelete: Cascade)
+
+  @@unique([pairId, interval, bucket])
+  @@index([pairId, interval, bucket])
+}
+
+model LiquidityPool {
+  id              String   @id @default(cuid())
+  pairId          String   @unique
+  contractAddress String?
+  feeBps          Int      @default(30)
+  reserve0        Decimal  @default(0) @db.Decimal(38, 18)
+  reserve1        Decimal  @default(0) @db.Decimal(38, 18)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  pair      Pair                @relation(fields: [pairId], references: [id], onDelete: Cascade)
+  positions LiquidityPosition[]
+}
+
+model LiquidityPosition {
+  id            String   @id @default(cuid())
+  poolId        String
+  userId        String
+  walletAddress String
+  liquidity     Decimal  @db.Decimal(38, 18)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  pool LiquidityPool @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  user User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([poolId])
+  @@index([userId])
+}
+
+model StakingPosition {
+  id         String   @id @default(cuid())
+  userId     String
+  stakeKey   String
+  amount     Decimal  @db.Decimal(38, 18)
+  rewardDebt Decimal? @db.Decimal(38, 18)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, stakeKey])
+  @@index([userId])
+}
+
+model OnchainTransaction {
+  id          String        @id @default(cuid())
+  txHash      String        @unique
+  chainId     Int
+  fromAddress String?
+  toAddress   String?
+  method      String?
+  status      ChainTxStatus @default(PENDING)
+  blockNumber BigInt?
+  raw         Json?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([chainId, status])
+  @@index([fromAddress])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  title     String
+  body      String?
+  read      Boolean  @default(false)
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read, createdAt])
+}
+
+model Watchlist {
+  id        String   @id @default(cuid())
+  userId    String?
+  sessionId String?
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User?           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items WatchlistItem[]
+
+  @@index([userId])
+  @@index([sessionId])
+}
+
+model WatchlistItem {
+  id          String @id @default(cuid())
+  watchlistId String
+  pairId      String
+  sortOrder   Int    @default(0)
+
+  watchlist Watchlist @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+  pair      Pair      @relation(fields: [pairId], references: [id], onDelete: Cascade)
+
+  @@unique([watchlistId, pairId])
+  @@index([watchlistId, sortOrder])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  actorUserId String?
+  action      String
+  entityType  String
+  entityId    String?
+  metadata    Json?
+  ip          String?
+  createdAt   DateTime @default(now())
+
+  actor User? @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([actorUserId, createdAt])
+}

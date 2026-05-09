@@ -1,0 +1,9 @@
+node_modules
+.turbo
+.next
+dist
+coverage
+apps/contracts/artifacts
+apps/contracts/cache
+apps/contracts/typechain-types
+pnpm-lock.yaml
